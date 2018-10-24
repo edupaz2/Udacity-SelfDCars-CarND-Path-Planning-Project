@@ -8,6 +8,7 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
 
 using namespace std;
 
@@ -95,7 +96,7 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 	prev_wp = next_wp-1;
 	if(next_wp == 0)
 	{
-		prev_wp  = maps_x.size()-1;
+		prev_wp  = maps_x.size()-1; 
 	}
 
 	double n_x = maps_x[next_wp]-maps_x[prev_wp];
@@ -239,21 +240,142 @@ int main() {
 
           	json msgJson;
 
+            // Reference variables
+            double ref_x = car_x;
+            double ref_y = car_y;
+            double ref_yaw = deg2rad(car_yaw);
+            int lane = 1;
+            const double max_vel = 22; // m/s
+            double ref_vel = max_vel;
+            
+            // Create anchor points list to generate a spline for our new trajectory
+            // First obtain 2 points to concanete smoothly previous trajectory, if exists, and new.
+            vector<double> anchor_x;
+            vector<double> anchor_y;
+            const int prev_path_size = previous_path_x.size();
+            std::cout << "---- ITER -----" << std::endl;
+            std::cout << "Prev path size: " << prev_path_size << std::endl;
+            std::cout << car_x << " " << car_y << " " << car_s << " " << car_d << " " << car_yaw << " " << car_speed << std::endl;
+            if(prev_path_size < 2)
+            {
+              double prev_car_x = car_x - cos(car_yaw);
+              double prev_car_y = car_y - sin(car_yaw);
+
+              anchor_x.push_back(prev_car_x);
+              anchor_x.push_back(car_x);
+
+              anchor_y.push_back(prev_car_y);
+              anchor_y.push_back(car_y);
+            } else {
+              ref_x = previous_path_x[prev_path_size-1];
+              ref_y = previous_path_y[prev_path_size-1];
+
+              double prev_ref_x = previous_path_x[prev_path_size-2];
+              double prev_ref_y = previous_path_y[prev_path_size-2];
+              ref_yaw = atan2(ref_y-prev_ref_y, ref_x-prev_ref_x);
+
+              anchor_x.push_back(prev_ref_x);
+              anchor_x.push_back(ref_x);
+
+              anchor_y.push_back(prev_ref_y);
+              anchor_y.push_back(ref_y);
+            }
+            // Second, create the new anchor points for the spline
+            // So we are going to check ahead 5 steps of 20 meters
+            const double car_lane = 2+4*lane; // Middle lane
+            const int anchor_points_look_ahead = 90;
+            const int anchor_points_steps = 3;
+            const int anchor_points_inc = anchor_points_look_ahead/anchor_points_steps;
+            for(int i=1; i<=anchor_points_steps; ++i)
+            {
+              // TODO: car_s + X is not going to work at the end of the lap
+              vector<double> anchor_xy = getXY(car_s+(i*anchor_points_inc), car_lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+              anchor_x.push_back(anchor_xy[0]);
+              anchor_y.push_back(anchor_xy[1]);
+            }
+            // Third, shift and rotate the new path to car´s origin coordinate system. 
+            for(int i=0; i< anchor_x.size(); ++i)
+            {
+              std::cout << "Anchor[i]=(" << anchor_x[i] << ", " << anchor_y[i] << ")" << std::endl;
+              double shift_x = anchor_x[i]-ref_x; 
+              double shift_y = anchor_y[i]-ref_y;
+
+              anchor_x[i] = (shift_x*cos(0-ref_yaw))-shift_y*sin(0-ref_yaw);
+              anchor_y[i] = (shift_x*sin(0-ref_yaw))+shift_y*cos(0-ref_yaw);
+              std::cout << "NEW Anchor[i]=(" << anchor_x[i] << ", " << anchor_y[i] << ")" << std::endl;
+            }
+
+            // Fourth, create the spline
+            tk::spline s;
+            s.set_points(anchor_x, anchor_y);
+
+            // Lastly, create the next_vals by using the spline function
+            // Define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
           	vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
-
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-            double dist_inc = 0.3;
-            for (int i=0; i < 50; ++i)
+            for(int i=0; i<prev_path_size; ++i)
             {
-              double next_s = car_s + (i*dist_inc);
-              double next_d = 6;
-              vector<double> next_xy = getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-              next_x_vals.push_back(next_xy[0]);
-              next_y_vals.push_back(next_xy[1]);
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
+            
+            const int remaining_points = 50-prev_path_size;
+            std::cout << "Remaining points: " << remaining_points << std::endl;
+            const double distance = ref_vel * 0.02;
+            for(int i=1; i<=remaining_points; ++i)
+            {
+              double new_x = i*distance;
+              double new_y = s(new_x);
+
+              double shift_x = new_x; 
+              double shift_y = new_y;
+
+              new_x = (shift_x*cos(ref_yaw))-shift_y*sin(ref_yaw);
+              new_y = (shift_x*sin(ref_yaw))+shift_y*cos(ref_yaw);
+
+              new_x += ref_x;
+              new_y += ref_y;
+
+              next_x_vals.push_back(new_x);
+              next_y_vals.push_back(new_y); 
             }
 
+            /*double desired_v = max_v; // for now
+            if(remaining_points > 0)
+            {
+              // According to safe distance tables:
+              // Speed     | Thinking distance | Total Stopping time:
+              // 50 mph    |   50 feet         |   175 feet
+              // 22.35 m/s |   15 m            |     53 m
+              //
+              // a_max = 10m/s2
+              // v_max = 22.352 m/s
+              // In t=0.02s, d_inc=0.447m, v_inc=0.2m/s
+              double speed_inc = (desired_v-car_speed) / 0.02; 
+              for(int i=1; i<=remaining_points; ++i)
+              {
+                double d = car_speed+(i*speed_inc)*0.02;
+                if(d > 0.447)
+                {
+                  d = 0.447;
+                }
+                double new_x = d;
+                double new_y = s(new_x);
+
+                double shift_x = new_x; 
+                double shift_y = new_y;
+
+                new_x = (shift_x*cos(ref_yaw))-shift_y*sin(ref_yaw);
+                new_y = (shift_x*sin(ref_yaw))+shift_y*cos(ref_yaw);
+
+                new_x += ref_x;
+                new_y += ref_y;
+
+                next_x_vals.push_back(new_x);
+                next_y_vals.push_back(new_y); 
+              }
+            }*/
 
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
