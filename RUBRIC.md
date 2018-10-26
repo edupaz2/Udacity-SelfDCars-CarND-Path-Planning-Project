@@ -14,11 +14,9 @@ Avoid collisions.
 #### Steps and iterations:
 Steps:
 1. Get the car follow a straight line of waypoints in the middle lane. There are no checks for collisions, and speed/acc/jerk constraints .
-2. Reuse previous trajectory points left. 
-3. Make the trajectory smooth using spline.
-4. Obey to speed/acc/jerk constraints.
-5. Avoid collisions.
-6. Change lanes.
+2. Make the trajectory smooth using spline, while reusing previous trajectory points left. 
+3. Obey to speed/acc/jerk constraints and avoid collisions.
+4. Change lanes.
 
 #### Main car's localization Data (No Noise)
 

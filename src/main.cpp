@@ -20,6 +20,13 @@ constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
+// CONSTANTS
+const double time_cycle = 0.02;
+const double speed_max = 21;// 50MPH = 22.352; // m/s
+
+double desired_speed = 0.0; // The speed we want to achieve. It can be higher or lower than our current speed.
+double planned_speed = 0.0; // The speed on the last point of the trajectory path.
+
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
 // else the empty string "" will be returned.
@@ -244,18 +251,14 @@ int main() {
             double ref_x = car_x;
             double ref_y = car_y;
             double ref_yaw = deg2rad(car_yaw);
-            int lane = 1;
-            const double max_vel = 22; // m/s
-            double ref_vel = max_vel;
-            
+
             // Create anchor points list to generate a spline for our new trajectory
             // First obtain 2 points to concanete smoothly previous trajectory, if exists, and new.
             vector<double> anchor_x;
             vector<double> anchor_y;
             const int prev_path_size = previous_path_x.size();
             std::cout << "---- ITER -----" << std::endl;
-            std::cout << "Prev path size: " << prev_path_size << std::endl;
-            std::cout << car_x << " " << car_y << " " << car_s << " " << car_d << " " << car_yaw << " " << car_speed << std::endl;
+            std::cout << "X: " << car_x << ", Y:" << car_y << ", S:" << car_s << ", D:" << car_d << ", YAW:" << car_yaw << ", SPEED:" << car_speed << ", DESIRED: " << desired_speed <<  std::endl;
             if(prev_path_size < 2)
             {
               double prev_car_x = car_x - cos(car_yaw);
@@ -282,27 +285,57 @@ int main() {
             }
             // Second, create the new anchor points for the spline
             // So we are going to check ahead 5 steps of 20 meters
-            const double car_lane = 2+4*lane; // Middle lane
-            const int anchor_points_look_ahead = 90;
-            const int anchor_points_steps = 3;
-            const int anchor_points_inc = anchor_points_look_ahead/anchor_points_steps;
-            for(int i=1; i<=anchor_points_steps; ++i)
+
+            // BEHAVIOR PLANNER
+            int lane = 1;
+            if (desired_speed == 0.0)
+            {
+              desired_speed = speed_max;
+            }
+            else
+            {
+              // The data format for each car is: [ id, x, y, vx, vy, s, d].
+              double closest_car_dist = 10000; // Some large number
+              for(int i=0; i < sensor_fusion.size(); ++i)
+              {
+                if(4*lane-2 < sensor_fusion[i][6] && sensor_fusion[i][6] < 4*lane+2)
+                {
+                  double s = sensor_fusion[i][5];
+                  double distance = s - car_s;
+                  // Leave 50m in front
+                  if(distance < closest_car_dist && distance > 0 && distance < 30)
+                  {
+                    closest_car_dist = distance;
+                    double vx = sensor_fusion[i][3];
+                    double vy = sensor_fusion[i][4];
+                    desired_speed = sqrt(vx*vx + vy*vy);
+                  }
+                }
+              }
+            }
+
+
+            // The road has 181 waypoints and 6945.554 meters length
+            // Each waypoint covers around 38.373 meters (close to 40 meters).
+            // Let´s visit the next 3
+            const double car_lane = 2+4*lane;
+            const int waypoint_distance = 40; // 38.4 meters
+            const int waypoints_to_visit = 3;
+            for(int i=1; i<=waypoints_to_visit; ++i)
             {
               // TODO: car_s + X is not going to work at the end of the lap
-              vector<double> anchor_xy = getXY(car_s+(i*anchor_points_inc), car_lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+              vector<double> anchor_xy = getXY(car_s+(i*waypoint_distance), car_lane, map_waypoints_s, map_waypoints_x, map_waypoints_y);
               anchor_x.push_back(anchor_xy[0]);
               anchor_y.push_back(anchor_xy[1]);
             }
             // Third, shift and rotate the new path to car´s origin coordinate system. 
             for(int i=0; i< anchor_x.size(); ++i)
             {
-              std::cout << "Anchor[i]=(" << anchor_x[i] << ", " << anchor_y[i] << ")" << std::endl;
               double shift_x = anchor_x[i]-ref_x; 
               double shift_y = anchor_y[i]-ref_y;
 
               anchor_x[i] = (shift_x*cos(0-ref_yaw))-shift_y*sin(0-ref_yaw);
               anchor_y[i] = (shift_x*sin(0-ref_yaw))+shift_y*cos(0-ref_yaw);
-              std::cout << "NEW Anchor[i]=(" << anchor_x[i] << ", " << anchor_y[i] << ")" << std::endl;
             }
 
             // Fourth, create the spline
@@ -310,22 +343,37 @@ int main() {
             s.set_points(anchor_x, anchor_y);
 
             // Lastly, create the next_vals by using the spline function
-            // Define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-          	vector<double> next_x_vals;
-          	vector<double> next_y_vals;
 
+            // Define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+            vector<double> next_x_vals;
+            vector<double> next_y_vals;
+
+            // Evaluate Speed: previous, current and desired
+            // First add the previous path points.
             for(int i=0; i<prev_path_size; ++i)
             {
               next_x_vals.push_back(previous_path_x[i]);
               next_y_vals.push_back(previous_path_y[i]);
             }
-            
+
             const int remaining_points = 50-prev_path_size;
-            std::cout << "Remaining points: " << remaining_points << std::endl;
-            const double distance = ref_vel * 0.02;
             for(int i=1; i<=remaining_points; ++i)
             {
-              double new_x = i*distance;
+              double step = i*(desired_speed * time_cycle);
+              if(planned_speed < desired_speed)
+              {
+                planned_speed += 0.08;
+                step = i*(planned_speed * time_cycle);
+              }
+              else if(planned_speed > desired_speed)
+              {
+                planned_speed -= 0.08;
+                step = i*(planned_speed * time_cycle);
+              }
+              else
+                planned_speed = desired_speed;
+
+              double new_x = step;
               double new_y = s(new_x);
 
               double shift_x = new_x; 
@@ -338,44 +386,8 @@ int main() {
               new_y += ref_y;
 
               next_x_vals.push_back(new_x);
-              next_y_vals.push_back(new_y); 
+              next_y_vals.push_back(new_y);
             }
-
-            /*double desired_v = max_v; // for now
-            if(remaining_points > 0)
-            {
-              // According to safe distance tables:
-              // Speed     | Thinking distance | Total Stopping time:
-              // 50 mph    |   50 feet         |   175 feet
-              // 22.35 m/s |   15 m            |     53 m
-              //
-              // a_max = 10m/s2
-              // v_max = 22.352 m/s
-              // In t=0.02s, d_inc=0.447m, v_inc=0.2m/s
-              double speed_inc = (desired_v-car_speed) / 0.02; 
-              for(int i=1; i<=remaining_points; ++i)
-              {
-                double d = car_speed+(i*speed_inc)*0.02;
-                if(d > 0.447)
-                {
-                  d = 0.447;
-                }
-                double new_x = d;
-                double new_y = s(new_x);
-
-                double shift_x = new_x; 
-                double shift_y = new_y;
-
-                new_x = (shift_x*cos(ref_yaw))-shift_y*sin(ref_yaw);
-                new_y = (shift_x*sin(ref_yaw))+shift_y*cos(ref_yaw);
-
-                new_x += ref_x;
-                new_y += ref_y;
-
-                next_x_vals.push_back(new_x);
-                next_y_vals.push_back(new_y); 
-              }
-            }*/
 
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
