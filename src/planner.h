@@ -13,13 +13,13 @@ public:
 
 private:
 
-	int      m_totalLanes;
-	double   m_maxSpeed;
+  int      m_totalLanes;
+  double   m_maxSpeed;
 
-	int      m_currentLane;
-	double   m_targetSpeed; // The speed we want to achieve. It can be higher or lower than our current speed.
+  int      m_currentLane;
+  double   m_targetSpeed; // The speed we want to achieve. It can be higher or lower than our current speed.
 
-	std::vector< std::pair<double, double> > m_laneDistancesAndSpeeds;
+  std::vector< std::pair<double, double> > m_laneDistancesAndSpeeds;
 
   // 0 - KEEP LANE
   // 1 - PREPARING FOR LANE CHANGE
