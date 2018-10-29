@@ -13,42 +13,45 @@ Avoid collisions.
 
 #### Steps and iterations:
 Steps:
-1. Get the car follow a straight line of waypoints in the middle lane. There are no checks for collisions, and speed/acc/jerk constraints .
+1. Create a list of waypoints and get the car follow it.
 2. Make the trajectory smooth using spline, while reusing previous trajectory points left. 
 3. Obey to speed/acc/jerk constraints and avoid collisions.
 4. Change lanes.
 
-#### Main car's localization Data (No Noise)
+#### Detailed description
+## Step 1: Create a list of waypoints and get the car follow it.
 
-["x"] The car's x position in map coordinates
+The road is divided into 181 waypoints. We create a small list of the next 3 waypoints ahead of us plus our current position and a previous position based on our current yaw (to avoid sudden turns).
+Check the code in main.cpp from 265-318.
 
-["y"] The car's y position in map coordinates
+## Step 2. Make the trajectory smooth using spline, while reusing previous trajectory points left. 
+Once the previous list is created we use a Spline Tool (http://kluge.in-chemnitz.de/opensource/spline/) to create a smoother path for the car to drive through.
+Check the code in main.cpp from 320-363.
 
-["s"] The car's s position in frenet coordinates
+## Step 3. Obey to speed/acc/jerk constraints and avoid collisions.
+In order to avoid sudden turns, acceleration, we increase the speed by a certain amount to reach our target speed (At main.cpp the variable path_planned_speed help us with that).
+Check the code in main.cpp from 339-343.
+Check also planner.h line 114, where we slow down a little when changing lanes.
 
-["d"] The car's d position in frenet coordinates
+## Step 4. Change lanes.
+I created a the Planner class to help deciding what to do: lane and speed. It´s based on FSM with 3 states:
+- State 1: Keep the current lane.
+- State 2: Decide if we change lanes.
+- State 3: Perform the lane change.
 
-["yaw"] The car's yaw angle in the map
+On State 1: (planner.h line 84-98)
+If there is no car ahead of us (more than 50m ahead), our target speed is the max speed.
+If there is a car in front of us at less than 50 meters, we target its speed and change to State 2.
 
-["speed"] The car's speed in MPH
+On State 2: (planner.h line 100-116)
+We check our left lane, current lane and right lane for a better speed. That means, checking if there is a car in front of us, its speed, and if there is enough (safe) space to change lane (if we decide to).
+Once we choose the best option, we target our lane and speed and change to State 3.
 
-#### Previous path data given to the Planner
+On State 3: (planner.h line 118-127)
+We are performing the lane change. Once we arrive, we change to state 0, and keep the lane again.
 
-//Note: Return the previous list but with processed points removed, can be a nice tool to show how far along
-the path has processed since last time. 
+#### Improvements:
+- We are not checking cars coming from behind at higher speeds than us.
+- We are not canceling the lane change if there is change of the events: car braking, car coming from behind.
 
-["previous_path_x"] The previous list of x points previously given to the simulator
 
-["previous_path_y"] The previous list of y points previously given to the simulator
-
-#### Previous path's end s and d values 
-
-["end_path_s"] The previous list's last point's frenet s value
-
-["end_path_d"] The previous list's last point's frenet d value
-
-#### Sensor Fusion Data, a list of all other car's attributes on the same side of the road. (No Noise)
-
-["sensor_fusion"] A 2d vector of cars and then that car's [car's unique ID, car's x position in map coordinates, car's y position in map coordinates, car's x velocity in m/s, car's y velocity in m/s, car's s position in frenet coordinates, car's d position in frenet coordinates. 
-
-####
