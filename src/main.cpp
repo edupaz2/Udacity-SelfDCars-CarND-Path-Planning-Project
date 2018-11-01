@@ -9,7 +9,6 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 #include "spline.h"
-#include "planner.h"
 
 using namespace std;
 
@@ -21,12 +20,209 @@ constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
 
+class Planner
+{
+public:
+  void    init                 (int totalLanes, double maxSpeed);
+
+  void    tick                 (double tickTime, double car_s, double car_d, const std::vector< std::vector<double> >& sensor_fusion);
+
+  double  getTargetSpeed       () const { return m_targetSpeed; }
+  int     getCurrentLane       () const { return 4*m_currentLane+m_currentLaneOffset; }
+
+private:
+
+  int      m_totalLanes;
+  double   m_maxSpeed;
+
+  int      m_currentLane;
+  double   m_targetSpeed; // The speed we want to achieve. It can be higher or lower than our current speed.
+
+  std::vector< std::pair<double, double> > m_carsAheadDistanceAndSpeed;
+  std::vector< std::pair<double, double> > m_carsBehindDistanceAndSpeed;
+
+  // 0 - KEEP LANE
+  // 1 - PREPARING FOR LANE CHANGE
+  // 2 - CHANGING LANE
+  int     m_state;
+  int     m_targetLane;
+  int     m_currentLaneOffset;
+  double  checkSpeedInLane     (int lane) const;
+};
+
+
+void Planner::init(int totalLanes, double maxSpeed)
+{
+  m_totalLanes = totalLanes;
+  m_maxSpeed = maxSpeed;
+  m_targetSpeed = m_maxSpeed;
+
+  m_carsAheadDistanceAndSpeed = std::vector< std::pair<double, double> >(m_totalLanes);
+  m_carsBehindDistanceAndSpeed = std::vector< std::pair<double, double> >(m_totalLanes);
+  std::cout << "**** PLANNER - KEEP LANE " << m_currentLane << " ****" << std::endl;
+  m_state = 0;
+  m_currentLane = 1;
+  m_currentLaneOffset = 2;
+  m_targetLane = m_currentLane;
+}
+
+void Planner::tick(double tickTime, double car_s, double car_d, const std::vector< std::vector<double> >& sensor_fusion)
+{
+  // BEHAVIOR PLANNER
+  if (m_targetSpeed == 0.0)
+  {
+    m_targetSpeed = m_maxSpeed;
+  }
+  else
+  {
+    // The data format in sensor_fusion is: [ id, x, y, vx, vy, s, d].
+    for(int i=0; i<m_totalLanes; ++i)
+    {
+      m_carsAheadDistanceAndSpeed[i].first = 10000; // Some large number for the distance
+      m_carsAheadDistanceAndSpeed[i].second = m_maxSpeed;
+
+      m_carsBehindDistanceAndSpeed[i].first = 10000; // Some large number for the distance
+      m_carsBehindDistanceAndSpeed[i].second = m_maxSpeed;
+    }
+
+    const int size = sensor_fusion.size();
+    for(int i=0; i < size; ++i)
+    {
+      int car_lane = (sensor_fusion[i][6] / 4.0);
+      if(car_lane >= 0 && car_lane < m_totalLanes)
+      {
+        double other_car_s = sensor_fusion[i][5];
+        double distance = other_car_s - car_s;
+        // Check the closest car in ahead of us in each lane
+        if(distance > 0.0)
+        {
+          if(distance < m_carsAheadDistanceAndSpeed[car_lane].first)
+          {
+            m_carsAheadDistanceAndSpeed[car_lane].first = distance;
+            double vx = sensor_fusion[car_lane][3];
+            double vy = sensor_fusion[car_lane][4];
+            m_carsAheadDistanceAndSpeed[car_lane].second = sqrt(vx*vx + vy*vy);
+          }
+        }
+        else
+        {
+          if(abs(distance) < m_carsBehindDistanceAndSpeed[car_lane].first)
+          {
+            m_carsBehindDistanceAndSpeed[car_lane].first = abs(distance);
+            double vx = sensor_fusion[car_lane][3];
+            double vy = sensor_fusion[car_lane][4];
+            m_carsBehindDistanceAndSpeed[car_lane].second = sqrt(vx*vx + vy*vy);
+          }
+        }
+      }
+    }
+    // Decide the lane and speed
+    switch(m_state)
+    {
+      case 0: // KEEP LANE
+      {
+        if (m_carsAheadDistanceAndSpeed[m_currentLane].first >= 30.0)
+        {
+          m_targetSpeed = m_maxSpeed;
+        }
+        else
+        {
+          // Keep the lane
+          m_targetSpeed = m_carsAheadDistanceAndSpeed[m_currentLane].second;
+          // And plan to change lane
+          if(checkSpeedInLane(m_currentLane-1) > m_targetSpeed || checkSpeedInLane(m_currentLane+1) > m_targetSpeed)
+          {
+            std::cout << "**** PLANNER - CAR AHEAD. CHECK LANE CHANGING ****" << std::endl;
+            m_state = 1;
+          }
+          else
+          {
+            std::cout << "**** PLANNER - CAR AHEAD. SLOW DOWN.(" << m_targetSpeed << "m/s) ****" << std::endl;
+          }
+        }
+        break;
+      }
+      case 1:
+      {
+        // Decide which lane. Need to check space availability and car ahead's speed
+        const double speedArray[3] = {checkSpeedInLane(m_currentLane-1), m_targetSpeed, checkSpeedInLane(m_currentLane+1)};
+        double best_speed = 0.0;
+        for(int i=0; i<3; ++i)
+        {
+          if(speedArray[i] > best_speed)
+          {
+            m_targetLane = m_currentLane+i-1;
+            best_speed = speedArray[i];
+          }
+        }
+        if(m_targetLane == m_currentLane)
+        {
+          std::cout << "**** PLANNER - KEEP LANE " << m_currentLane << " ****" << std::endl;
+          m_state = 0;
+        }
+        else
+        {
+          std::cout << "**** PLANNER - CHANGING TO LANE " << m_targetLane << " ****" << std::endl;
+          m_targetSpeed = m_targetSpeed*0.8; // Slow down 20% to avoid changing lanes too fast.
+          m_state = 2;
+        }
+        break;
+      }
+      case 2:
+      {
+        if(m_targetLane < m_currentLane)
+        {
+          m_currentLaneOffset = 4;
+        }
+        else
+        {
+          m_currentLaneOffset = 0;
+        }
+        m_currentLane = m_targetLane;
+        m_state = 3;
+        break;
+      }
+      case 3:
+      {
+        if( 4*m_currentLane+m_currentLaneOffset-1 < car_d && car_d < 4*m_currentLane+m_currentLaneOffset+1 )
+        {
+          m_currentLane = m_targetLane;
+          m_currentLaneOffset = 2;
+          std::cout << "**** PLANNER - KEEP LANE " << m_currentLane << " ****" << std::endl;
+          m_state = 0;
+        }
+        break;
+      }
+    }
+  }
+}
+
+double Planner::checkSpeedInLane(int lane) const
+{
+  if(lane >= 0)
+  {
+    // Check safety first: a car behind or ahead too close
+    if(m_carsBehindDistanceAndSpeed[lane].first <= 10.0 || m_carsAheadDistanceAndSpeed[lane].first <= 30.0)
+    {
+      return 0.0;
+    }
+
+    if(m_carsAheadDistanceAndSpeed[lane].first <= 40.0)
+      return m_carsAheadDistanceAndSpeed[lane].second;
+
+    if(m_carsAheadDistanceAndSpeed[lane].first > 40.0)
+      return m_maxSpeed; // Go as fast as you can!
+  }
+  return 0.0;
+}
+/// END PLANNER
+
 // CONSTANTS
 const double time_cycle = 0.02;
 const double max_speed = 21.5;// 50MPH = 22.352; // m/s
 
+// VARIABLES
 double path_planned_speed = 0.0; // The speed on the last point of the trajectory path.
-
 Planner planner;
 
 // Checks if the SocketIO event has JSON data.

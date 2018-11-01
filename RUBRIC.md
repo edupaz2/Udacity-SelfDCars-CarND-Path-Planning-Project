@@ -21,34 +21,42 @@ Steps:
 #### Detailed description
 ## Step 1: Create a list of waypoints and get the car follow it.
 
-The road is divided into 181 waypoints. We create a small list of the next 3 waypoints ahead of us plus our current position and a previous position based on our current yaw (to avoid sudden turns).
-Check the code in main.cpp from 265-318.
+The road is divided into 181 waypoints. I create a small list of the next 3 waypoints ahead of us plus our current position and a previous position based on our current yaw (to avoid sudden turns).
+Check the code in main.cpp from 461-514.
 
 ## Step 2. Make the trajectory smooth using spline, while reusing previous trajectory points left. 
 Once the previous list is created we use a Spline Tool (http://kluge.in-chemnitz.de/opensource/spline/) to create a smoother path for the car to drive through.
-Check the code in main.cpp from 320-363.
+Check the code in main.cpp from 517-559.
 
 ## Step 3. Obey to speed/acc/jerk constraints and avoid collisions.
 In order to avoid sudden turns, acceleration, we increase the speed by a certain amount to reach our target speed (At main.cpp the variable path_planned_speed help us with that).
-Check the code in main.cpp from 339-343.
-Check also planner.h line 114, where we slow down a little when changing lanes.
+Check the code in main.cpp from 535-542.
+Check also main.cpph line 166, where we slow down 20% when changing lanes.
 
 ## Step 4. Change lanes.
-I created a the Planner class to help deciding what to do: lane and speed. It´s based on FSM with 3 states:
-- State 1: Keep the current lane.
-- State 2: Decide if we change lanes.
-- State 3: Perform the lane change.
+I created the Planner class (lines 23-218) to help deciding what to do about lane and speed. It´s based on FSM with 4 states:
+- State 0: Keep the current lane.
+- State 1: Decide if we change lanes.
+- State 2: Start the lane change.
+- State 3: Finish the lane change.
 
-On State 1: (planner.h line 84-98)
-If there is no car ahead of us (more than 50m ahead), our target speed is the max speed.
-If there is a car in front of us at less than 50 meters, we target its speed and change to State 2.
+On State 0: (main.cpp line 122-144)
+If there is no car ahead of us (more than 30m ahead), our target speed is the max speed.
+If there is a car in front of us at less than 30 meters, we match its speed and check if we want a lane change (State 1).
 
-On State 2: (planner.h line 100-116)
-We check our left lane, current lane and right lane for a better speed. That means, checking if there is a car in front of us, its speed, and if there is enough (safe) space to change lane (if we decide to).
-Once we choose the best option, we target our lane and speed and change to State 3.
+On State 1: (main.cpp line 145-170)
+We check our left lane and right lane (if they are drivable) for the best speed, checking the following parameters for a safe maneuver:
+- If a car is behind less than 10m, the lane is discarded.
+- If a car is ahead less than 30m, the lane is discarded.
+- If a car is ahead between 30m-40m, the lane max speed will be this car´s speed.
+- If no car ahead, the lane max speed will be the max speed.
+With left, current and right lanes speeds, the we choose the best lane. If we choose to change lane, we go to State 2.
 
-On State 3: (planner.h line 118-127)
-We are performing the lane change. Once we arrive, we change to state 0, and keep the lane again.
+On State 2: (main.cpp line 171-184)
+We start the lane change reducing the speed by 20% and starting an smooth maneuver. When we crossed the road lane between the two lanes, we go to State 3.
+
+On State 3: (main.cpp line 185-194)
+We finishe the by arriving to the middle of the target lane. Once we arrive, we change to State 0, and keep the lane again.
 
 #### Improvements:
 - We are not checking cars coming from behind at higher speeds than us.
